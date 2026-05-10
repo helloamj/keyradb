@@ -4,6 +4,7 @@ import "bytes"
 
 type SparseIndex struct {
 	minKey []byte
+	maxKey []byte
 	offset uint64
 }
 
@@ -17,16 +18,31 @@ func NewSparseTable() *SparseTable {
 	}
 }
 
-func (st *SparseTable) Add(key []byte, offset uint64) {
-	keyCopy := make([]byte, len(key))
-	copy(keyCopy, key)
+func (st *SparseTable) Add(minKey, maxKey []byte, offset uint64) {
+	minKeyCopy := make([]byte, len(minKey))
+	copy(minKeyCopy, minKey)
+
+	maxKeyCopy := make([]byte, len(maxKey))
+	copy(maxKeyCopy, maxKey)
 
 	st.index = append(st.index, SparseIndex{
-		minKey: keyCopy,
+		minKey: minKeyCopy,
+		maxKey: maxKeyCopy,
 		offset: offset,
 	})
 }
 
+// Get returns the offset of the block whose key range contains the key.
+//
+// Example:
+//
+//	[a-c] -> 0
+//	[d-f] -> 100
+//	[g-z] -> 200
+//
+// Lookup:
+//
+//	key="e" => 100
 func (st *SparseTable) Get(key []byte) (uint64, bool) {
 	if len(st.index) == 0 {
 		return 0, false
@@ -35,24 +51,26 @@ func (st *SparseTable) Get(key []byte) (uint64, bool) {
 	low := 0
 	high := len(st.index) - 1
 
-	result := -1
-
 	for low <= high {
 		mid := low + (high-low)/2
 
-		cmp := bytes.Compare(st.index[mid].minKey, key)
+		entry := st.index[mid]
 
-		if cmp <= 0 {
-			result = mid
-			low = mid + 1
-		} else {
+		// key < minKey
+		if bytes.Compare(key, entry.minKey) < 0 {
 			high = mid - 1
+			continue
 		}
+
+		// key > maxKey
+		if bytes.Compare(key, entry.maxKey) > 0 {
+			low = mid + 1
+			continue
+		}
+
+		// minKey <= key <= maxKey
+		return entry.offset, true
 	}
 
-	if result == -1 {
-		return 0, false
-	}
-
-	return st.index[result].offset, true
+	return 0, false
 }
