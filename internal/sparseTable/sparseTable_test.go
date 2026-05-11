@@ -9,7 +9,6 @@ func TestSparseTable_Basic(t *testing.T) {
 		t.Fatal("expected non-nil SparseTable")
 	}
 
-	// block ranges
 	st.Add([]byte("apple"), []byte("banana"), 10)
 	st.Add([]byte("carrot"), []byte("grape"), 20)
 	st.Add([]byte("kiwi"), []byte("orange"), 30)
@@ -31,7 +30,7 @@ func TestSparseTable_Basic(t *testing.T) {
 
 		{[]byte("aardvark"), 0, false},
 		{[]byte("zzz"), 0, false},
-		{[]byte("horse"), 0, false}, // between grape and kiwi
+		{[]byte("horse"), 0, false},
 	}
 
 	for _, tt := range tests {
@@ -78,7 +77,6 @@ func TestSparseTable_KeyCopy(t *testing.T) {
 
 	st.Add(minKey, maxKey, 100)
 
-	// mutate original slices
 	minKey[0] = 'z'
 	maxKey[0] = 'z'
 
