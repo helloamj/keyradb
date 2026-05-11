@@ -104,3 +104,41 @@ func TestSparseTable_SingleEntry(t *testing.T) {
 		t.Fatalf("expected offset=999 got=%d", offset)
 	}
 }
+
+func TestSparseTable_SerializeAndDeserialize(t *testing.T) {
+	st := NewSparseTable()
+
+	st.Add([]byte("apple"), []byte("banana"), 10)
+	st.Add([]byte("carrot"), []byte("grape"), 20)
+	st.Add([]byte("kiwi"), []byte("orange"), 30)
+
+	data := st.Serialize()
+
+	deserialized, err := Deserialize(data)
+	if err != nil {
+		t.Fatalf("failed to deserialize: %v", err)
+	}
+
+	tests := []struct {
+		key      []byte
+		expected uint64
+		found    bool
+	}{
+		{[]byte("apple"), 10, true},
+		{[]byte("date"), 20, true},
+		{[]byte("orange"), 30, true},
+		{[]byte("zzz"), 0, false},
+	}
+
+	for _, tt := range tests {
+		offset, found := deserialized.Get(tt.key)
+
+		if found != tt.found {
+			t.Errorf("Get(%q): expected found=%v got=%v", tt.key, tt.found, found)
+		}
+
+		if found && offset != tt.expected {
+			t.Errorf("Get(%q): expected offset=%d got=%d", tt.key, tt.expected, offset)
+		}
+	}
+}
