@@ -98,3 +98,42 @@ func BenchmarkBloomFilter_Contains(b *testing.B) {
 		bf.Contains(key)
 	}
 }
+
+func TestBloomFilter_SerializeAndDeserialize(t *testing.T) {
+	bf := NewBloomFilter(1024, 4)
+
+	keys := [][]byte{
+		[]byte("apple"),
+		[]byte("banana"),
+		[]byte("cherry"),
+	}
+
+	for _, k := range keys {
+		bf.Add(k)
+	}
+
+	data := bf.Serialize()
+
+	deserialized, err := Deserialize(data)
+	if err != nil {
+		t.Fatalf("failed to deserialize: %v", err)
+	}
+
+	for _, k := range keys {
+		if !deserialized.Contains(k) {
+			t.Errorf("expected deserialized bloom filter to contain key: %s", string(k))
+		}
+	}
+
+	if deserialized.Contains([]byte("not-in-filter")) {
+		t.Errorf("unexpected false positive for key: not-in-filter")
+	}
+
+	if deserialized.numBits != bf.numBits {
+		t.Errorf("expected numBits=%d, got=%d", bf.numBits, deserialized.numBits)
+	}
+
+	if deserialized.numHashes != bf.numHashes {
+		t.Errorf("expected numHashes=%d, got=%d", bf.numHashes, deserialized.numHashes)
+	}
+}
