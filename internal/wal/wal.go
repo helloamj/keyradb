@@ -2,6 +2,8 @@ package wal
 
 import (
 	"encoding/binary"
+	"errors"
+	"hash/crc32"
 	"io"
 	"log"
 	"os"
@@ -12,6 +14,8 @@ const (
 	opPut    byte = 0
 	opDelete byte = 1
 )
+
+var ErrChecksumMismatch = errors.New("wal record checksum mismatch - data corruption detected")
 
 type Record struct {
 	Key     []byte
@@ -45,14 +49,18 @@ func (w *WAL) Append(key []byte, value []byte, deleted bool) error {
 	keyLen := uint32(len(key))
 	valLen := uint32(len(value))
 
-	size := 1 + 4 + keyLen + 4 + valLen
+	// Layout: opType(1) | keyLen(4) | key | valLen(4) | value | checksum(4)
+	size := 1 + 4 + keyLen + 4 + valLen + 4
 	buf := make([]byte, size)
 
 	buf[0] = opType
 	binary.LittleEndian.PutUint32(buf[1:5], keyLen)
 	copy(buf[5:5+keyLen], key)
 	binary.LittleEndian.PutUint32(buf[5+keyLen:9+keyLen], valLen)
-	copy(buf[9+keyLen:], value)
+	copy(buf[9+keyLen:size-4], value)
+
+	checksum := crc32.ChecksumIEEE(buf[:size-4])
+	binary.LittleEndian.PutUint32(buf[size-4:], checksum)
 
 	_, err := w.file.Write(buf)
 	if err != nil {
@@ -85,7 +93,6 @@ func (w *WAL) Recover() ([]Record, error) {
 		if err != nil {
 			return nil, err
 		}
-
 		opType := opTypeBuf[0]
 		deleted := (opType == opDelete)
 
@@ -115,6 +122,26 @@ func (w *WAL) Recover() ([]Record, error) {
 			if err != nil {
 				return nil, err
 			}
+		}
+
+		var checksumBuf [4]byte
+		_, err = io.ReadFull(w.file, checksumBuf[:])
+		if err != nil {
+			return nil, err
+		}
+		storedChecksum := binary.LittleEndian.Uint32(checksumBuf[:])
+
+		dataSize := 1 + 4 + keyLen + 4 + valLen
+		dataBuf := make([]byte, dataSize)
+		dataBuf[0] = opType
+		copy(dataBuf[1:5], keyLenBuf[:])
+		copy(dataBuf[5:5+keyLen], key)
+		copy(dataBuf[5+keyLen:9+keyLen], valLenBuf[:])
+		copy(dataBuf[9+keyLen:], value)
+
+		calculatedChecksum := crc32.ChecksumIEEE(dataBuf)
+		if calculatedChecksum != storedChecksum {
+			return nil, ErrChecksumMismatch
 		}
 
 		records = append(records, Record{
@@ -148,4 +175,18 @@ func (w *WAL) Clear() error {
 	}
 	w.file = file
 	return nil
+}
+
+func (w *WAL) Size() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.file == nil {
+		return 0
+	}
+	stat, err := w.file.Stat()
+	if err != nil {
+		return 0
+	}
+	return stat.Size()
 }

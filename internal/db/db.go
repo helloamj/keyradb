@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/helloamj/keyradb/internal/memtable"
 	"github.com/helloamj/keyradb/internal/sstable"
@@ -36,18 +37,26 @@ func DefaultOptions() Options {
 	}
 }
 
+type immutableMemtable struct {
+	mem     *memtable.Memtable
+	walPath string
+}
+
 type DB struct {
 	dir  string
 	opts Options
 
 	mu           sync.RWMutex
 	active       *memtable.Memtable
-	immutables   []*memtable.Memtable
+	immutables   []*immutableMemtable
 	sstableFiles []string
 	readers      []*sstable.TableReader
 	wal          *wal.WAL
 	nextSST      int
 	closed       bool
+
+	flushChan chan *immutableMemtable
+	flushDone chan struct{}
 }
 
 func Open(dir string, opts Options) (*DB, error) {
@@ -55,28 +64,24 @@ func Open(dir string, opts Options) (*DB, error) {
 		return nil, fmt.Errorf("db: create dir: %w", err)
 	}
 
-	walPath := filepath.Join(dir, walFileName)
-	w, err := wal.NewWAL(walPath)
-	if err != nil {
-		return nil, fmt.Errorf("db: open wal: %w", err)
-	}
-
 	db := &DB{
-		dir:    dir,
-		opts:   opts,
-		active: memtable.New(),
-		wal:    w,
+		dir:       dir,
+		opts:      opts,
+		active:    memtable.New(),
+		flushChan: make(chan *immutableMemtable, 10),
+		flushDone: make(chan struct{}),
 	}
 
 	if err := db.loadSSTables(); err != nil {
-		w.Close()
 		return nil, fmt.Errorf("db: load sstables: %w", err)
 	}
 
-	if err := db.recover(); err != nil {
-		w.Close()
+	if err := db.recoverWALs(); err != nil {
 		return nil, fmt.Errorf("db: wal recovery: %w", err)
 	}
+
+	go db.flushLoop()
+	go db.compactionLoop()
 
 	return db, nil
 }
@@ -96,8 +101,8 @@ func (db *DB) Put(key, value []byte) error {
 	db.active.Put(key, value)
 
 	if db.active.Size() >= db.opts.MemtableMaxBytes {
-		if err := db.flushLocked(); err != nil {
-			return fmt.Errorf("db: flush: %w", err)
+		if err := db.rollActiveMemtable(); err != nil {
+			return fmt.Errorf("db: roll memtable: %w", err)
 		}
 	}
 
@@ -119,8 +124,8 @@ func (db *DB) Delete(key []byte) error {
 	db.active.Delete(key)
 
 	if db.active.Size() >= db.opts.MemtableMaxBytes {
-		if err := db.flushLocked(); err != nil {
-			return fmt.Errorf("db: flush: %w", err)
+		if err := db.rollActiveMemtable(); err != nil {
+			return fmt.Errorf("db: roll memtable: %w", err)
 		}
 	}
 
@@ -140,7 +145,7 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 	}
 
 	for i := len(db.immutables) - 1; i >= 0; i-- {
-		if v, ok := db.immutables[i].Get(key); ok {
+		if v, ok := db.immutables[i].mem.Get(key); ok {
 			return v, nil
 		}
 	}
@@ -160,55 +165,109 @@ func (db *DB) Get(key []byte) ([]byte, error) {
 
 func (db *DB) Flush() error {
 	db.mu.Lock()
-	defer db.mu.Unlock()
-
 	if db.closed {
+		db.mu.Unlock()
 		return ErrClosed
 	}
-
-	return db.flushLocked()
+	if db.active.Size() > 0 {
+		if err := db.rollActiveMemtable(); err != nil {
+			db.mu.Unlock()
+			return err
+		}
+	}
+	db.mu.Unlock()
+	return nil
 }
 
 func (db *DB) Close() error {
 	db.mu.Lock()
-	defer db.mu.Unlock()
-
 	if db.closed {
+		db.mu.Unlock()
 		return nil
 	}
 	db.closed = true
 
-	if err := db.flushLocked(); err != nil {
-		return err
+	if db.active.Size() > 0 {
+		_ = db.rollActiveMemtable()
 	}
+	db.mu.Unlock()
+
+	close(db.flushChan)
+	<-db.flushDone
+
+	db.mu.Lock()
+	defer db.mu.Unlock()
 
 	for _, r := range db.readers {
 		r.Close()
 	}
 
-	return db.wal.Close()
+	if db.wal != nil {
+		return db.wal.Close()
+	}
+	return nil
 }
 
-func (db *DB) flushLocked() error {
-	if db.active.Size() == 0 {
-		return nil
+func (db *DB) rollActiveMemtable() error {
+	if db.wal != nil {
+		if err := db.wal.Close(); err != nil {
+			return err
+		}
 	}
 
-	records := db.active.Iterator()
+	ts := time.Now().UnixNano()
+	oldWalPath := filepath.Join(db.dir, fmt.Sprintf("wal-%d.log", ts))
 
+	activeWalPath := filepath.Join(db.dir, walFileName)
+	if _, err := os.Stat(activeWalPath); err == nil {
+		if err := os.Rename(activeWalPath, oldWalPath); err != nil {
+			return err
+		}
+	} else {
+		oldWalPath = filepath.Join(db.dir, fmt.Sprintf("wal-%d.log", ts))
+	}
+
+	w, err := wal.NewWAL(activeWalPath)
+	if err != nil {
+		return err
+	}
+	db.wal = w
+
+	imm := &immutableMemtable{
+		mem:     db.active,
+		walPath: oldWalPath,
+	}
+
+	db.immutables = append([]*immutableMemtable{imm}, db.immutables...)
+	db.active = memtable.New()
+
+	db.flushChan <- imm
+	return nil
+}
+
+func (db *DB) flushLoop() {
+	defer close(db.flushDone)
+	for imm := range db.flushChan {
+		if err := db.flushImmutable(imm); err != nil {
+			fmt.Printf("db: flush failed: %v\n", err)
+		}
+	}
+}
+
+func (db *DB) flushImmutable(imm *immutableMemtable) error {
+	db.mu.Lock()
 	db.nextSST++
 	path := filepath.Join(db.dir, fmt.Sprintf("%08d%s", db.nextSST, sstableExt))
+	db.mu.Unlock()
 
+	records := imm.mem.Iterator()
 	builder, err := sstable.NewTableBuilder(path, uint64(len(records)))
 	if err != nil {
 		return err
 	}
 
 	for _, rec := range records {
-		if rec.Deleted {
-			continue
-		}
-		if err := builder.Add(rec.Key, rec.Value); err != nil {
+		if err := builder.Add(rec.Key, rec.Value, rec.Deleted); err != nil {
 			return err
 		}
 	}
@@ -222,15 +281,19 @@ func (db *DB) flushLocked() error {
 		return err
 	}
 
+	db.mu.Lock()
 	db.readers = append([]*sstable.TableReader{reader}, db.readers...)
 	db.sstableFiles = append([]string{path}, db.sstableFiles...)
 
-	if err := db.wal.Clear(); err != nil {
-		return err
+	for i, im := range db.immutables {
+		if im == imm {
+			db.immutables = append(db.immutables[:i], db.immutables[i+1:]...)
+			break
+		}
 	}
+	db.mu.Unlock()
 
-	db.active = memtable.New()
-
+	os.Remove(imm.walPath)
 	return nil
 }
 
@@ -279,17 +342,66 @@ func (db *DB) loadSSTables() error {
 	return nil
 }
 
-func (db *DB) recover() error {
-	records, err := db.wal.Recover()
+func (db *DB) recoverWALs() error {
+	entries, err := os.ReadDir(db.dir)
 	if err != nil {
 		return err
 	}
 
-	for _, rec := range records {
-		if rec.Deleted {
-			db.active.Delete(rec.Key)
+	var walFiles []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "wal") && strings.HasSuffix(e.Name(), ".log") {
+			walFiles = append(walFiles, e.Name())
+		}
+	}
+
+	sort.Strings(walFiles)
+
+	for _, name := range walFiles {
+		path := filepath.Join(db.dir, name)
+		w, err := wal.NewWAL(path)
+		if err != nil {
+			return err
+		}
+		records, err := w.Recover()
+		w.Close()
+
+		if err != nil {
+			return err
+		}
+
+		if name == walFileName {
+			db.wal, _ = wal.NewWAL(path)
+			for _, rec := range records {
+				if rec.Deleted {
+					db.active.Delete(rec.Key)
+				} else {
+					db.active.Put(rec.Key, rec.Value)
+				}
+			}
 		} else {
-			db.active.Put(rec.Key, rec.Value)
+			immMem := memtable.New()
+			for _, rec := range records {
+				if rec.Deleted {
+					immMem.Delete(rec.Key)
+				} else {
+					immMem.Put(rec.Key, rec.Value)
+				}
+			}
+			imm := &immutableMemtable{
+				mem:     immMem,
+				walPath: path,
+			}
+			db.immutables = append([]*immutableMemtable{imm}, db.immutables...)
+			db.flushChan <- imm
+		}
+	}
+
+	if db.wal == nil {
+		activeWalPath := filepath.Join(db.dir, walFileName)
+		db.wal, err = wal.NewWAL(activeWalPath)
+		if err != nil {
+			return err
 		}
 	}
 

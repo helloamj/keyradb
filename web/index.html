@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KeyraDB Dashboard</title>
+    <meta name="description" content="Interactive visualizer for the KeyraDB LSM Engine">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <div class="logo">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="url(#gradient)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <defs>
+                        <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#3b82f6"/>
+                            <stop offset="100%" stop-color="#8b5cf6"/>
+                        </linearGradient>
+                    </defs>
+                    <path d="M4 4h16v16H4z"></path>
+                    <path d="M4 12h16"></path>
+                    <path d="M12 4v16"></path>
+                </svg>
+                <h1>KeyraDB <span class="badge">Engine Visualizer</span></h1>
+            </div>
+            <div class="controls">
+                <button id="refresh-btn" class="btn primary">Refresh Stats</button>
+                <button id="flush-btn" class="btn secondary">Force Flush</button>
+            </div>
+        </header>
+
+        <main>
+            <div class="sidebar">
+                <section class="card metrics-card">
+                    <h2>System Metrics</h2>
+                    <div class="metric">
+                        <span class="label">Active Memtable</span>
+                        <div class="progress-bar-bg">
+                            <div class="progress-bar-fill" id="mem-fill"></div>
+                        </div>
+                        <span class="value" id="mem-val">0 / 0 MB</span>
+                    </div>
+                    <div class="metric">
+                        <span class="label">WAL Size</span>
+                        <span class="value code" id="wal-size">0 KB</span>
+                    </div>
+                    <div class="metric">
+                        <span class="label">SSTables</span>
+                        <span class="value" id="sst-count">0</span>
+                    </div>
+                </section>
+
+                <section class="card interactive-card">
+                    <h2>Query Console</h2>
+                    <form id="query-form">
+                        <div class="input-group">
+                            <label for="op">Operation</label>
+                            <select id="op">
+                                <option value="GET">GET</option>
+                                <option value="PUT">PUT</option>
+                                <option value="DELETE">DELETE</option>
+                            </select>
+                        </div>
+                        <div class="input-group">
+                            <label for="key">Key</label>
+                            <input type="text" id="key" placeholder="e.g. user_1" required autocomplete="off">
+                        </div>
+                        <div class="input-group" id="val-group">
+                            <label for="value">Value</label>
+                            <input type="text" id="value" placeholder="e.g. John Doe" autocomplete="off">
+                        </div>
+                        <button type="submit" class="btn primary full-width">Execute</button>
+                    </form>
+                    <div id="query-result" class="query-result hidden"></div>
+                </section>
+            </div>
+
+            <div class="visualization">
+                <section class="memtables-view card">
+                    <h2>Memtables (In-Memory)</h2>
+                    <div class="scroll-container" id="memtables-container">
+                        <!-- Populated via JS -->
+                    </div>
+                </section>
+
+                <section class="sstables-view card">
+                    <h2>SSTables (On-Disk)</h2>
+                    <div class="scroll-container" id="sstables-container">
+                        <!-- Populated via JS -->
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

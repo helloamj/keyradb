@@ -7,9 +7,9 @@ import (
 )
 
 type SparseIndex struct {
-	minKey []byte
-	maxKey []byte
-	offset uint64
+	MinKey []byte
+	MaxKey []byte
+	Offset uint64
 }
 
 type SparseTable struct {
@@ -30,9 +30,9 @@ func (st *SparseTable) Add(minKey, maxKey []byte, offset uint64) {
 	copy(maxKeyCopy, maxKey)
 
 	st.index = append(st.index, SparseIndex{
-		minKey: minKeyCopy,
-		maxKey: maxKeyCopy,
-		offset: offset,
+		MinKey: minKeyCopy,
+		MaxKey: maxKeyCopy,
+		Offset: offset,
 	})
 }
 
@@ -49,23 +49,26 @@ func (st *SparseTable) Get(key []byte) (uint64, bool) {
 
 		entry := st.index[mid]
 
-		if bytes.Compare(key, entry.minKey) < 0 {
+		if bytes.Compare(key, entry.MinKey) < 0 {
 			high = mid - 1
 			continue
 		}
 
-		if bytes.Compare(key, entry.maxKey) > 0 {
+		if bytes.Compare(key, entry.MaxKey) > 0 {
 			low = mid + 1
 			continue
 		}
 
-		return entry.offset, true
+		return entry.Offset, true
 	}
 
 	return 0, false
 }
 
-// Serialize converts the sparse table into a binary format.
+func (st *SparseTable) Entries() []SparseIndex {
+	return st.index
+}
+
 func (st *SparseTable) Serialize() []byte {
 	var buf bytes.Buffer
 
@@ -73,19 +76,18 @@ func (st *SparseTable) Serialize() []byte {
 	_ = binary.Write(&buf, binary.LittleEndian, numEntries)
 
 	for _, entry := range st.index {
-		_ = binary.Write(&buf, binary.LittleEndian, uint16(len(entry.minKey)))
-		buf.Write(entry.minKey)
+		_ = binary.Write(&buf, binary.LittleEndian, uint16(len(entry.MinKey)))
+		buf.Write(entry.MinKey)
 
-		_ = binary.Write(&buf, binary.LittleEndian, uint16(len(entry.maxKey)))
-		buf.Write(entry.maxKey)
+		_ = binary.Write(&buf, binary.LittleEndian, uint16(len(entry.MaxKey)))
+		buf.Write(entry.MaxKey)
 
-		_ = binary.Write(&buf, binary.LittleEndian, entry.offset)
+		_ = binary.Write(&buf, binary.LittleEndian, entry.Offset)
 	}
 
 	return buf.Bytes()
 }
 
-// Deserialize reads a sparse table from a binary format.
 func Deserialize(data []byte) (*SparseTable, error) {
 	if len(data) < 4 {
 		return nil, errors.New("invalid sparse table data")
@@ -126,9 +128,9 @@ func Deserialize(data []byte) (*SparseTable, error) {
 		}
 
 		index[i] = SparseIndex{
-			minKey: minKey,
-			maxKey: maxKey,
-			offset: offset,
+			MinKey: minKey,
+			MaxKey: maxKey,
+			Offset: offset,
 		}
 	}
 

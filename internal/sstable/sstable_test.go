@@ -27,7 +27,7 @@ func TestTableBuilderAndReader(t *testing.T) {
 	}
 
 	for _, e := range entries {
-		err := builder.Add(e.key, e.val)
+		err := builder.Add(e.key, e.val, false)
 		if err != nil {
 			t.Fatalf("failed to add %s: %v", string(e.key), err)
 		}
@@ -70,12 +70,12 @@ func TestUnsortedKeys(t *testing.T) {
 	}
 	defer func() { _ = builder.Finish() }()
 
-	err = builder.Add([]byte("key2"), []byte("val2"))
+	err = builder.Add([]byte("key2"), []byte("val2"), false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	err = builder.Add([]byte("key1"), []byte("val1"))
+	err = builder.Add([]byte("key1"), []byte("val1"), false)
 	if err != ErrKeysNotSorted {
 		t.Errorf("expected ErrKeysNotSorted, got %v", err)
 	}
@@ -93,7 +93,7 @@ func TestLargeBlocks(t *testing.T) {
 	for i := 0; i < 2000; i++ {
 		key := []byte(fmt.Sprintf("key%05d", i))
 		val := make([]byte, 100)
-		err := builder.Add(key, val)
+		err := builder.Add(key, val, false)
 		if err != nil {
 			t.Fatalf("failed to add %s: %v", string(key), err)
 		}
