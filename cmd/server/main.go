@@ -37,6 +37,8 @@ func main() {
 	mux.HandleFunc("DELETE /keys/{key}", handleDelete(store))
 	mux.HandleFunc("POST /flush", handleFlush(store))
 	mux.HandleFunc("GET /health", handleHealth())
+	mux.HandleFunc("GET /api/stats", handleStats(store))
+	mux.Handle("/", http.FileServer(http.Dir("./web")))
 
 	srv := &http.Server{Addr: *addr, Handler: mux}
 
@@ -140,6 +142,17 @@ func handleFlush(store *db.DB) http.HandlerFunc {
 func handleHealth() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func handleStats(store *db.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		stats, err := store.Stats()
+		if err != nil {
+			httpError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, stats)
 	}
 }
 

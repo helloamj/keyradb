@@ -142,13 +142,11 @@ func TestWALRecovery(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	// Close without flushing — WAL holds the data.
 	if err := db.wal.Close(); err != nil {
 		t.Fatalf("wal Close: %v", err)
 	}
 	db.closed = true
 
-	// Re-open; recovery should replay the WAL.
 	db2, err := Open(dir, DefaultOptions())
 	if err != nil {
 		t.Fatalf("Re-open: %v", err)

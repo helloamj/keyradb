@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"os"
 	"sync"
 
@@ -28,6 +29,7 @@ type TableReader struct {
 	size        int64
 	sparseTable *sparsetable.SparseTable
 	bloomFilter *bloomfilter.BloomFilter
+	cache       *blockCache
 
 	mu     sync.RWMutex
 	closed bool
@@ -94,6 +96,7 @@ func NewTableReader(path string) (*TableReader, error) {
 		size:        stat.Size(),
 		sparseTable: index,
 		bloomFilter: filter,
+		cache:       newBlockCache(64),
 	}, nil
 }
 
@@ -114,25 +117,44 @@ func (tr *TableReader) Get(key []byte) ([]byte, error) {
 		return nil, ErrKeyNotFound
 	}
 
-	var lenBuf [4]byte
-	if _, err := tr.file.ReadAt(lenBuf[:], int64(offset)); err != nil {
-		return nil, err
-	}
-	blockLen := binary.LittleEndian.Uint32(lenBuf[:])
+	var blockData []byte
+	if cached, found := tr.cache.get(offset); found {
+		blockData = cached
+	} else {
+		var lenBuf [4]byte
+		if _, err := tr.file.ReadAt(lenBuf[:], int64(offset)); err != nil {
+			return nil, err
+		}
+		blockLen := binary.LittleEndian.Uint32(lenBuf[:])
 
-	blockData := make([]byte, blockLen)
-	if _, err := tr.file.ReadAt(blockData, int64(offset)+4); err != nil {
-		return nil, err
+		blockData = make([]byte, blockLen)
+		if _, err := tr.file.ReadAt(blockData, int64(offset)+4); err != nil {
+			return nil, err
+		}
+
+		var crcBuf [4]byte
+		if _, err := tr.file.ReadAt(crcBuf[:], int64(offset)+4+int64(blockLen)); err != nil {
+			return nil, err
+		}
+		storedChecksum := binary.LittleEndian.Uint32(crcBuf[:])
+		calculatedChecksum := crc32.ChecksumIEEE(blockData)
+		if storedChecksum != calculatedChecksum {
+			return nil, errors.New("sstable block checksum mismatch - data corruption detected")
+		}
+
+		tr.cache.put(offset, blockData)
 	}
 
+	blockLen := uint32(len(blockData))
 	idx := 0
 	for idx < int(blockLen) {
-		if idx+6 > int(blockLen) {
+		if idx+7 > int(blockLen) {
 			break
 		}
 		kLen := int(binary.LittleEndian.Uint16(blockData[idx : idx+2]))
 		vLen := int(binary.LittleEndian.Uint32(blockData[idx+2 : idx+6]))
-		idx += 6
+		deleted := blockData[idx+6] == 1
+		idx += 7
 
 		if idx+kLen+vLen > int(blockLen) {
 			break
@@ -144,6 +166,9 @@ func (tr *TableReader) Get(key []byte) ([]byte, error) {
 
 		cmp := bytes.Compare(currKey, key)
 		if cmp == 0 {
+			if deleted {
+				return nil, ErrKeyNotFound
+			}
 			ret := make([]byte, len(currVal))
 			copy(ret, currVal)
 			return ret, nil
@@ -204,13 +229,21 @@ func (tb *TableBuilder) flushBlock() error {
 		return err
 	}
 
-	if _, err := tb.file.Write(tb.currentBlock.Bytes()); err != nil {
+	blockData := tb.currentBlock.Bytes()
+	if _, err := tb.file.Write(blockData); err != nil {
+		return err
+	}
+
+	checksum := crc32.ChecksumIEEE(blockData)
+	var crcBuf [4]byte
+	binary.LittleEndian.PutUint32(crcBuf[:], checksum)
+	if _, err := tb.file.Write(crcBuf[:]); err != nil {
 		return err
 	}
 
 	tb.sparseTable.Add(tb.minKey, tb.maxKey, tb.blockOffset)
 
-	tb.blockOffset += uint64(4 + tb.currentBlock.Len())
+	tb.blockOffset += uint64(4 + len(blockData) + 4)
 	tb.currentBlock.Reset()
 	tb.minKey = nil
 	tb.maxKey = nil
@@ -218,7 +251,7 @@ func (tb *TableBuilder) flushBlock() error {
 	return nil
 }
 
-func (tb *TableBuilder) Add(key []byte, value []byte) error {
+func (tb *TableBuilder) Add(key []byte, value []byte, deleted bool) error {
 	if tb.closed {
 		return ErrClosed
 	}
@@ -233,9 +266,14 @@ func (tb *TableBuilder) Add(key []byte, value []byte) error {
 	}
 	tb.maxKey = append([]byte(nil), key...)
 
-	var hdr [6]byte
+	var hdr [7]byte
 	binary.LittleEndian.PutUint16(hdr[0:2], uint16(len(key)))
 	binary.LittleEndian.PutUint32(hdr[2:6], uint32(len(value)))
+	if deleted {
+		hdr[6] = 1
+	} else {
+		hdr[6] = 0
+	}
 
 	tb.currentBlock.Write(hdr[:])
 	tb.currentBlock.Write(key)
@@ -295,4 +333,122 @@ func (tb *TableBuilder) Finish() error {
 	}
 
 	return tb.file.Close()
+}
+
+func (tr *TableReader) Size() int64 {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+	return tr.size
+}
+
+func (tr *TableReader) Path() string {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+	return tr.file.Name()
+}
+
+func (tr *TableReader) SparseTable() *sparsetable.SparseTable {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+	return tr.sparseTable
+}
+
+type IteratorRecord struct {
+	Key     []byte
+	Value   []byte
+	Deleted bool
+}
+
+type TableIterator struct {
+	tr       *TableReader
+	entries  []sparsetable.SparseIndex
+	entryIdx int
+	block    []byte
+	blockIdx int
+}
+
+func (tr *TableReader) Iterator() *TableIterator {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+	var entries []sparsetable.SparseIndex
+	if tr.sparseTable != nil {
+		entries = tr.sparseTable.Entries()
+	}
+	return &TableIterator{
+		tr:       tr,
+		entries:  entries,
+		entryIdx: 0,
+		block:    nil,
+		blockIdx: 0,
+	}
+}
+
+func (it *TableIterator) Next() (IteratorRecord, bool, error) {
+	for {
+		if it.blockIdx >= len(it.block) {
+			if it.entryIdx >= len(it.entries) {
+				return IteratorRecord{}, false, nil
+			}
+			offset := it.entries[it.entryIdx].Offset
+			it.entryIdx++
+
+			var blockData []byte
+			if cached, found := it.tr.cache.get(offset); found {
+				blockData = cached
+			} else {
+				var lenBuf [4]byte
+				if _, err := it.tr.file.ReadAt(lenBuf[:], int64(offset)); err != nil {
+					return IteratorRecord{}, false, err
+				}
+				blockLen := binary.LittleEndian.Uint32(lenBuf[:])
+
+				blockData = make([]byte, blockLen)
+				if _, err := it.tr.file.ReadAt(blockData, int64(offset)+4); err != nil {
+					return IteratorRecord{}, false, err
+				}
+
+				var crcBuf [4]byte
+				if _, err := it.tr.file.ReadAt(crcBuf[:], int64(offset)+4+int64(blockLen)); err != nil {
+					return IteratorRecord{}, false, err
+				}
+				if crc32.ChecksumIEEE(blockData) != binary.LittleEndian.Uint32(crcBuf[:]) {
+					return IteratorRecord{}, false, errors.New("corrupt block")
+				}
+				it.tr.cache.put(offset, blockData)
+			}
+
+			it.block = blockData
+			it.blockIdx = 0
+		}
+
+		if it.blockIdx+7 > len(it.block) {
+			it.blockIdx = len(it.block)
+			continue
+		}
+
+		kLen := int(binary.LittleEndian.Uint16(it.block[it.blockIdx : it.blockIdx+2]))
+		vLen := int(binary.LittleEndian.Uint32(it.block[it.blockIdx+2 : it.blockIdx+6]))
+		deleted := it.block[it.blockIdx+6] == 1
+		it.blockIdx += 7
+
+		if it.blockIdx+kLen+vLen > len(it.block) {
+			it.blockIdx = len(it.block)
+			continue
+		}
+
+		key := it.block[it.blockIdx : it.blockIdx+kLen]
+		val := it.block[it.blockIdx+kLen : it.blockIdx+kLen+vLen]
+		it.blockIdx += kLen + vLen
+
+		retKey := make([]byte, len(key))
+		copy(retKey, key)
+		retVal := make([]byte, len(val))
+		copy(retVal, val)
+
+		return IteratorRecord{
+			Key:     retKey,
+			Value:   retVal,
+			Deleted: deleted,
+		}, true, nil
+	}
 }
