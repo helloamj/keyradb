@@ -83,7 +83,7 @@ async function forceFlush() {
 
 function createTableHTML(title, isImmutable, keys) {
     const headerClass = isImmutable ? 'immutable' : '';
-    const badge = isImmutable ? '<span class="badge">Immutable</span>' : '<span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border-color: rgba(16, 185, 129, 0.3)">Active</span>';
+    const badge = isImmutable ? '<span class="badge">[IMMUTABLE]</span>' : '<span class="badge">[ACTIVE]</span>';
     
     let entriesHTML = '';
     if (keys && keys.length > 0) {
@@ -94,7 +94,7 @@ function createTableHTML(title, isImmutable, keys) {
             </div>
         `).join('');
     } else {
-        entriesHTML = '<div class="entry-row" style="color:var(--text-secondary); justify-content:center;">Empty</div>';
+        entriesHTML = '<div class="entry-row">Empty</div>';
     }
 
     return `
@@ -114,8 +114,8 @@ function createSSTableHTML(sst) {
     let entriesHTML = '';
     if (sst.blocks && sst.blocks.length > 0) {
         entriesHTML = sst.blocks.map((b, i) => `
-            <div class="entry-row" style="flex-direction:column; align-items:flex-start;">
-                <div style="font-size:0.75rem; color:var(--text-secondary); margin-bottom:2px;">Block ${i} (Offset: ${b.offset})</div>
+            <div class="entry-row" style="flex-direction:column; align-items:flex-start; margin-bottom: 10px; border-bottom: 1px dotted black; padding-bottom: 5px;">
+                <div>Block ${i} (Offset: ${b.offset})</div>
                 <div style="display:flex; justify-content:space-between; width:100%;">
                     <span class="entry-key">${b.min_key}</span>
                     <span class="entry-val">${b.max_key}</span>
@@ -123,14 +123,14 @@ function createSSTableHTML(sst) {
             </div>
         `).join('');
     } else {
-        entriesHTML = '<div class="entry-row" style="color:var(--text-secondary); justify-content:center;">No Blocks</div>';
+        entriesHTML = '<div class="entry-row">No Blocks</div>';
     }
 
     return `
         <div class="data-table">
             <div class="table-header">
                 ${sst.name}
-                <span class="badge" style="background: rgba(59, 130, 246, 0.2); color: #93c5fd; border-color: rgba(59, 130, 246, 0.3)">${formatBytes(sst.size)}</span>
+                <span class="badge">[${formatBytes(sst.size)}]</span>
             </div>
             <div class="table-entries">
                 ${entriesHTML}
@@ -172,7 +172,7 @@ async function fetchStats() {
                 sstHTML += createSSTableHTML(sst);
             });
         } else {
-            sstHTML = '<div style="color:var(--text-secondary); padding: 1rem;">No SSTables on disk yet.</div>';
+            sstHTML = '<div>No SSTables on disk yet.</div>';
         }
         sstContainer.innerHTML = sstHTML;
 
