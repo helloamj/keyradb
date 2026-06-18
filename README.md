@@ -90,10 +90,13 @@ go test -v ./...
 
 ## Component READMEs
 
+- [`cmd`](cmd/README.md) — Main applications
+- [`cmd/server`](cmd/server/README.md) — HTTP Server
+- [`internal`](internal/README.md) — Internal packages
 - [`internal/db`](internal/db/README.md) — LSM engine
 - [`internal/memtable`](internal/memtable/README.md) — Memtable
 - [`internal/sstable`](internal/sstable/README.md) — SSTable
 - [`internal/wal`](internal/wal/README.md) — Write-Ahead Log
 - [`internal/bloomfilter`](internal/bloomfilter/README.md) — Bloom Filter
 - [`internal/sparseTable`](internal/sparseTable/README.md) — Sparse Table
-- [`cmd/server`](cmd/server/README.md) — HTTP Server
+- [`web`](web/README.md) — Web Dashboard
