@@ -42,16 +42,6 @@ keyradb/
 └── go.mod
 ```
 
-## SOLID Design
-
-| Principle | How it is applied |
-|---|---|
-| **S** — Single Responsibility | Each package owns exactly one concern: WAL = durability, Memtable = fast writes, SSTable = persistence, Bloom Filter = negative lookup, Sparse Table = block indexing. |
-| **O** — Open / Closed | `DB.Options` lets callers configure behaviour (flush threshold, etc.) without modifying the engine. |
-| **L** — Liskov Substitution | Internal storage readers (`TableReader`) and builders (`TableBuilder`) have separate types — neither can be misused in the other's role. |
-| **I** — Interface Segregation | Consumers interact with `db.DB` through only the operations they need (`Put`, `Get`, `Delete`, `Flush`, `Close`). Internal plumbing is unexported. |
-| **D** — Dependency Inversion | The server (`cmd/server`) depends on the `db` package's exported surface only — it has zero knowledge of memtables, SSTables, or WAL internals. |
-
 ## Write Path
 
 ```
